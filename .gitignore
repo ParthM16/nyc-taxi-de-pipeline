@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# GCP credentials — NEVER commit these
+*.json
+service-account-key*.json
+application_default_credentials.json
+
+# Environment variables
+.env
+.env.*
+
+# Spark / Hadoop temp files
+derby.log
+metastore_db/
+spark-warehouse/
+
+# IDE
+.vscode/settings.json
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# Airflow
+airflow/logs/
+airflow/airflow.db
+airflow.cfg
