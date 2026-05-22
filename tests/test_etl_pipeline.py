@@ -21,12 +21,24 @@ from pyspark_jobs.etl_pipeline import clean_data, transform_data, build_daily_ag
 
 @pytest.fixture(scope="session")
 def spark():
-    """Shared SparkSession for all tests — local mode, no cluster needed."""
+    """Shared SparkSession for all tests — local mode, no cluster needed.
+    Windows: uses local[1] + loopback bind + extended timeouts to avoid Py4J socket issues.
+    """
+    # Tell PySpark to use the same Python executable running pytest
+    python_exec = sys.executable
+    os.environ["PYSPARK_PYTHON"] = python_exec
+    os.environ["PYSPARK_DRIVER_PYTHON"] = python_exec
+
     session = (
         SparkSession.builder
         .appName("test_nyc_taxi_etl")
-        .master("local[2]")
-        .config("spark.sql.shuffle.partitions", "4")
+        .master("local[1]")                          # 1 core avoids Windows worker spawn issues
+        .config("spark.sql.shuffle.partitions", "1") # minimum shuffles for tiny test data
+        .config("spark.network.timeout", "600s")
+        .config("spark.executor.heartbeatInterval", "60s")
+        .config("spark.python.worker.reuse", "false") # fresh worker per task
+        .config("spark.driver.bindAddress", "127.0.0.1")
+        .config("spark.driver.host", "127.0.0.1")    # force loopback — key fix on Windows
         .getOrCreate()
     )
     session.sparkContext.setLogLevel("ERROR")
@@ -103,51 +115,44 @@ class TestCleanData:
         assert clean_df.count() == 0
 
 
+# ── KEY FIX: run transform_data() ONCE, share result across all 6 tests ───────
+# Each test previously called transform_data() independently, triggering the
+# 7-day rolling window function 6 times — that's what was hanging on Windows.
+@pytest.fixture(scope="module")
+def transformed_row(spark):
+    """
+    Runs clean_data + transform_data once, collects to a plain Python dict.
+    All TestTransformData tests read from this dict — zero extra Spark actions.
+    """
+    df = spark.createDataFrame([make_trip_row()])
+    clean_df, _ = clean_data(df)
+    result = transform_data(clean_df)
+    row = result.collect()[0]  # one Spark action total
+    return row.asDict()
+
+
 class TestTransformData:
-    def _get_clean_df(self, spark):
-        df = spark.createDataFrame([make_trip_row()])
-        clean_df, _ = clean_data(df)
-        return clean_df
+    def test_trip_duration_computed(self, transformed_row):
+        assert transformed_row["trip_duration_minutes"] == pytest.approx(22.0, abs=0.1)
 
-    def test_trip_duration_computed(self, spark):
-        df = self._get_clean_df(spark)
-        result = transform_data(df)
-        row = result.collect()[0]
-        assert row["trip_duration_minutes"] == pytest.approx(22.0, abs=0.1)
-
-    def test_time_of_day_morning(self, spark):
+    def test_time_of_day_morning(self, transformed_row):
         # pickup_hour=9 → morning
-        df = self._get_clean_df(spark)
-        result = transform_data(df)
-        row = result.collect()[0]
-        assert row["time_of_day"] == "morning"
+        assert transformed_row["time_of_day"] == "morning"
 
-    def test_trip_category_medium(self, spark):
+    def test_trip_category_medium(self, transformed_row):
         # 3.5 miles → medium
-        df = self._get_clean_df(spark)
-        result = transform_data(df)
-        row = result.collect()[0]
-        assert row["trip_category"] == "medium"
+        assert transformed_row["trip_category"] == "medium"
 
-    def test_tip_pct_calculated(self, spark):
+    def test_tip_pct_calculated(self, transformed_row):
         # tip=3.00, fare=15.00 → 20%
-        df = self._get_clean_df(spark)
-        result = transform_data(df)
-        row = result.collect()[0]
-        assert row["tip_pct"] == pytest.approx(20.0, abs=0.1)
+        assert transformed_row["tip_pct"] == pytest.approx(20.0, abs=0.1)
 
-    def test_payment_label_credit_card(self, spark):
-        df = self._get_clean_df(spark)
-        result = transform_data(df)
-        row = result.collect()[0]
-        assert row["payment_label"] == "credit_card"
+    def test_payment_label_credit_card(self, transformed_row):
+        assert transformed_row["payment_label"] == "credit_card"
 
-    def test_is_weekend_false_for_weekday(self, spark):
+    def test_is_weekend_false_for_weekday(self, transformed_row):
         # 2023-06-15 is a Thursday
-        df = self._get_clean_df(spark)
-        result = transform_data(df)
-        row = result.collect()[0]
-        assert row["is_weekend"] is False
+        assert transformed_row["is_weekend"] is False
 
 
 class TestAggregates:

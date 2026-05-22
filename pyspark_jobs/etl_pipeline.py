@@ -229,11 +229,13 @@ def transform_data(df):
 
     # ── Window: 7-day rolling avg fare per pickup zone ──
     # Useful for anomaly detection and zone-level pricing trends
+    # FIX: PySpark 3.4+ does not allow DATE.cast("long").
+    # Use unix_date() (days since epoch) and rangeBetween in days instead.
     window_7d = (
         Window
         .partitionBy("pickup_location_id")
-        .orderBy(F.col("pickup_date").cast("long"))
-        .rangeBetween(-7 * 86400, 0)   # 7 days in seconds
+        .orderBy(F.unix_date(F.col("pickup_date")))   # days since epoch — compatible with PySpark 3.4+
+        .rangeBetween(-7, 0)                           # 7 days (in day units, matching unix_date)
     )
     df = df.withColumn(
         "rolling_7d_avg_fare_by_zone",
